@@ -68,9 +68,22 @@ GAMMA = 2.2
 # Hue names for --dwell, in HSV degrees.
 HUE_NAMES = {"red": 0, "orange": 30, "yellow": 60, "lime": 90, "green": 120, "teal": 150,
              "cyan": 180, "azure": 210, "blue": 240, "violet": 270, "magenta": 300, "rose": 330}
-# Holds tuned by eye: pure red and yellow are perceptually "flat", so even pacing
-# rushes past them; teal is the green->cyan transition, which looked too brief.
-DEFAULT_HOLDS = {"red": 5.0, "yellow": 1.5, "teal": 2.3}
+# Dwell per colour band, fitted so that a lap spends the seconds on each band
+# that were tuned by eye (see PROJECT_NOTES.md). --dwell overrides one at a time.
+DEFAULT_HOLDS = {
+    "red": 3.61,
+    "orange": 0.89,
+    "yellow": 1.15,
+    "lime": 0.5,
+    "green": 0.76,
+    "teal": 1.78,
+    "cyan": 1.52,
+    "azure": 0.38,
+    "blue": 0.8,
+    "violet": 0.7,
+    "magenta": 0.54,
+    "rose": 1.07,
+}
 
 # Where the running lamp keeps its state. lamp_off.py uses the same paths.
 STATE_DIR = Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()) / "LegoLamp"
@@ -224,26 +237,30 @@ def run_sequence(lamp, colours, transition, hold):
         index = next_index
 
 
-def oklab_hue(rgb, gamma):
-    """Perceived hue angle (degrees) of a perceptual 0-1 RGB colour, via Oklab"""
+def oklab(rgb, gamma):
+    """Perceptual position (L, a, b) of a 0-1 RGB colour, via Oklab"""
     r, g, b = (c ** gamma for c in rgb)  # to linear light, as the LEDs will emit it
     l = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b
     m = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b
     s = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b
     l, m, s = (v ** (1 / 3) for v in (l, m, s))
-    a = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s
-    b2 = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s
-    return math.degrees(math.atan2(b2, a))
+    return (0.2104542553 * l + 0.7936177850 * m - 0.0040720468 * s,
+            1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s,
+            0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s)
 
 
 class Rainbow:
     """
-    The colour wheel, re-timed so the *perceived* hue changes at a constant rate.
+    The colour wheel, re-timed so the colour *looks* like it changes at a
+    constant rate.
 
     Walking HSV hue at a constant speed looks uneven: the eye sees almost no
     change near pure red, green and blue, then a sprint through orange, yellow
-    and cyan. This maps an evenly advancing perceived hue (Oklab) back to the
-    HSV hue that produces it.
+    and cyan. This measures the perceived distance (Oklab) between neighbouring
+    colours on the wheel and spends time in proportion to it. Distance, not
+    hue angle: near pure green the hue angle is flat while the colour still
+    changes, and around blue it briefly runs backwards, so pacing by angle
+    alone produced visible jumps there.
     """
 
     STEPS = 720
@@ -257,31 +274,38 @@ class Rainbow:
             nearly as light as yellow; dimming them makes yellow the visible peak.
         yellow_boost: blue mixed into yellow (0-1). Whiter yellow reads brighter.
         holds: {hue_degrees: factor}. Move `factor` times slower around that hue
-            (raised-cosine window, half-width 30 degrees). Perceived hue barely
-            changes across pure red, for instance, so even pacing sweeps through
-            it in a couple of seconds; a hold gives it a share like yellow's.
+            (raised-cosine window, half-width 30 degrees).
         """
+        self.gamma = gamma
         self.cool_dim = cool_dim
         self.yellow_boost = yellow_boost
         self.hsv_hues = [i / self.STEPS for i in range(self.STEPS + 1)]
-        previous = oklab_hue(colorsys.hsv_to_rgb(self.hsv_hues[0], 1.0, 1.0), gamma)
-        unwrapped = [0.0]
+        previous = oklab(self.rim(self.hsv_hues[0]), gamma)
+        cumulative = [0.0]
         for h in self.hsv_hues[1:]:
-            angle = oklab_hue(colorsys.hsv_to_rgb(h, 1.0, 1.0), gamma)
-            step = (angle - previous + 180) % 360 - 180  # shortest signed step
-            previous = angle
+            point = oklab(self.rim(h), gamma)
+            distance = math.dist(point, previous)
+            previous = point
             # Speeding up = each perceived step counts for less of the lap.
             weight = 1.0 - (1.0 - 1.0 / cool_speed) * self.bump(h * 360, 195, 105)
             for hue_deg, factor in (holds or {}).items():
                 weight *= 1.0 + (factor - 1.0) * self.bump(h * 360, hue_deg, 30)
-            unwrapped.append(unwrapped[-1] + max(step, 0.0) * weight)
-        self.fractions = [u / unwrapped[-1] for u in unwrapped]  # 0..1, increasing
+            cumulative.append(cumulative[-1] + distance * weight)
+        self.fractions = [c / cumulative[-1] for c in cumulative]  # 0..1, increasing
 
     @staticmethod
     def bump(hue_deg, centre, half_width):
         """Raised-cosine window: 1 at centre, fading smoothly to 0 at +/- half_width"""
         d = abs((hue_deg - centre + 180) % 360 - 180)
         return 0.5 * (1 + math.cos(math.pi * d / half_width)) if d < half_width else 0.0
+
+    def rim(self, hue):
+        """The (perceptual, 0-1) colour shown for an HSV hue, after dimming and boosting"""
+        r, g, b = colorsys.hsv_to_rgb(hue, 1.0, 1.0)
+        deg = hue * 360
+        dim = 1.0 - (1.0 - self.cool_dim) * self.bump(deg, 150, 75)   # lime..green..cyan..azure
+        b = min(1.0, b + self.yellow_boost * self.bump(deg, 60, 30))  # whiten around yellow
+        return (r * dim, g * dim, b * dim)
 
     def colour(self, fraction):
         """Colour at a point 0-1 around the wheel, evenly spaced to the eye"""
@@ -291,11 +315,7 @@ class Rainbow:
         f0, f1 = self.fractions[i], self.fractions[i + 1]
         t = (fraction - f0) / (f1 - f0) if f1 > f0 else 0.0
         hue = self.hsv_hues[i] + (self.hsv_hues[i + 1] - self.hsv_hues[i]) * t
-        r, g, b = colorsys.hsv_to_rgb(hue, 1.0, 1.0)
-        deg = hue * 360
-        dim = 1.0 - (1.0 - self.cool_dim) * self.bump(deg, 150, 75)   # lime..green..cyan..azure
-        b = min(1.0, b + self.yellow_boost * self.bump(deg, 60, 30))  # whiten around yellow
-        return (round(r * dim * 255), round(g * dim * 255), round(b * dim * 255))
+        return tuple(round(c * 255) for c in self.rim(hue))
 
 
 def run_rainbow(lamp, cycle_seconds):
