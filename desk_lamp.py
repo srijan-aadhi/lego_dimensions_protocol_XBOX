@@ -149,7 +149,7 @@ class Lamp:
     """Sends colours to the pad, skipping repeats so the USB link isn't flooded"""
 
     def __init__(self, gateway, brightness, stop, gamma=GAMMA,
-                 cool_speed=1.0, cool_dim=1.0, yellow_boost=0.0):
+                 cool_speed=1.0, cool_dim=1.0, yellow_boost=0.0, red_hold=1.0):
         self.gateway = gateway
         self.brightness = brightness
         self.stop = stop
@@ -157,6 +157,7 @@ class Lamp:
         self.cool_speed = cool_speed
         self.cool_dim = cool_dim
         self.yellow_boost = yellow_boost
+        self.red_hold = red_hold
         self.current = None
 
     def reconnected(self, gateway):
@@ -226,7 +227,7 @@ class Rainbow:
 
     STEPS = 720
 
-    def __init__(self, gamma, cool_speed=1.0, cool_dim=1.0, yellow_boost=0.0):
+    def __init__(self, gamma, cool_speed=1.0, cool_dim=1.0, yellow_boost=0.0, red_hold=1.0):
         """
         cool_speed: how many times faster to move through green-cyan-blue-purple.
             The eye has one word ("blue") for a stretch that is as wide as
@@ -234,6 +235,9 @@ class Rainbow:
         cool_dim: brightness multiplier for lime-green-cyan (1 = none). These are
             nearly as light as yellow; dimming them makes yellow the visible peak.
         yellow_boost: blue mixed into yellow (0-1). Whiter yellow reads brighter.
+        red_hold: how many times slower to move through pure red. Perceived hue
+            barely changes across red, so even pacing sweeps through it in a
+            couple of seconds; holding gives it a share like yellow's.
         """
         self.cool_dim = cool_dim
         self.yellow_boost = yellow_boost
@@ -246,6 +250,7 @@ class Rainbow:
             previous = angle
             # Speeding up = each perceived step counts for less of the lap.
             weight = 1.0 - (1.0 - 1.0 / cool_speed) * self.bump(h * 360, 195, 105)
+            weight *= 1.0 + (red_hold - 1.0) * self.bump(h * 360, 0, 30)
             unwrapped.append(unwrapped[-1] + max(step, 0.0) * weight)
         self.fractions = [u / unwrapped[-1] for u in unwrapped]  # 0..1, increasing
 
@@ -272,7 +277,7 @@ class Rainbow:
 
 def run_rainbow(lamp, cycle_seconds):
     """Walk around the colour wheel, one full lap every cycle_seconds"""
-    rainbow = Rainbow(lamp.gamma, lamp.cool_speed, lamp.cool_dim, lamp.yellow_boost)
+    rainbow = Rainbow(lamp.gamma, lamp.cool_speed, lamp.cool_dim, lamp.yellow_boost, lamp.red_hold)
     begin = time.monotonic()
     while True:
         lamp.show(rainbow.colour((time.monotonic() - begin) / cycle_seconds))
@@ -340,6 +345,8 @@ def parse_args():
                         help="rainbow: mix this much blue into yellow, 0-1 (default 0), for a whiter, brighter yellow")
     parser.add_argument("--gamma", type=float, default=GAMMA,
                         help=f"LED gamma correction (default {GAMMA}); 1 sends raw values")
+    parser.add_argument("--red-hold", type=float, default=3.0, metavar="X",
+                        help="rainbow: linger X times longer on pure red (default 3; 1 = even)")
     parser.add_argument("--list", action="store_true", help="list presets and exit")
     parser.add_argument("--log", action="store_true",
                         help=f"also write messages to {DEFAULT_LOG_FILE}. "
@@ -357,8 +364,8 @@ def parse_args():
         parser.error("hold can't be negative")
     if args.gamma <= 0:
         parser.error("gamma must be more than 0")
-    if args.cool_speed <= 0:
-        parser.error("cool-speed must be more than 0")
+    if args.cool_speed <= 0 or args.red_hold <= 0:
+        parser.error("cool-speed and red-hold must be more than 0")
     if not 0 <= args.cool_dim <= 1 or not 0 <= args.yellow_boost <= 1:
         parser.error("cool-dim and yellow-boost must be between 0 and 1")
     if args.log_file is None and (args.log or sys.stderr is None):
@@ -385,7 +392,7 @@ def run(args):
     try:
         gateway = connect(args.verbose, stop)
         lamp = Lamp(gateway, args.brightness, stop, args.gamma,
-                    args.cool_speed, args.cool_dim, args.yellow_boost)
+                    args.cool_speed, args.cool_dim, args.yellow_boost, args.red_hold)
         log.info("Lamp on")
         while True:
             try:
