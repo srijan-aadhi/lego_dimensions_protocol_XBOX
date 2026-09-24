@@ -149,7 +149,7 @@ class Lamp:
     """Sends colours to the pad, skipping repeats so the USB link isn't flooded"""
 
     def __init__(self, gateway, brightness, stop, gamma=GAMMA,
-                 cool_speed=1.0, cool_dim=1.0, yellow_boost=0.0, red_hold=1.0):
+                 cool_speed=1.0, cool_dim=1.0, yellow_boost=0.0, red_hold=1.0, yellow_hold=1.0):
         self.gateway = gateway
         self.brightness = brightness
         self.stop = stop
@@ -158,6 +158,7 @@ class Lamp:
         self.cool_dim = cool_dim
         self.yellow_boost = yellow_boost
         self.red_hold = red_hold
+        self.yellow_hold = yellow_hold
         self.current = None
 
     def reconnected(self, gateway):
@@ -227,7 +228,8 @@ class Rainbow:
 
     STEPS = 720
 
-    def __init__(self, gamma, cool_speed=1.0, cool_dim=1.0, yellow_boost=0.0, red_hold=1.0):
+    def __init__(self, gamma, cool_speed=1.0, cool_dim=1.0, yellow_boost=0.0,
+                 red_hold=1.0, yellow_hold=1.0):
         """
         cool_speed: how many times faster to move through green-cyan-blue-purple.
             The eye has one word ("blue") for a stretch that is as wide as
@@ -238,6 +240,7 @@ class Rainbow:
         red_hold: how many times slower to move through pure red. Perceived hue
             barely changes across red, so even pacing sweeps through it in a
             couple of seconds; holding gives it a share like yellow's.
+        yellow_hold: the same for pure yellow.
         """
         self.cool_dim = cool_dim
         self.yellow_boost = yellow_boost
@@ -251,6 +254,7 @@ class Rainbow:
             # Speeding up = each perceived step counts for less of the lap.
             weight = 1.0 - (1.0 - 1.0 / cool_speed) * self.bump(h * 360, 195, 105)
             weight *= 1.0 + (red_hold - 1.0) * self.bump(h * 360, 0, 30)
+            weight *= 1.0 + (yellow_hold - 1.0) * self.bump(h * 360, 60, 30)
             unwrapped.append(unwrapped[-1] + max(step, 0.0) * weight)
         self.fractions = [u / unwrapped[-1] for u in unwrapped]  # 0..1, increasing
 
@@ -277,7 +281,8 @@ class Rainbow:
 
 def run_rainbow(lamp, cycle_seconds):
     """Walk around the colour wheel, one full lap every cycle_seconds"""
-    rainbow = Rainbow(lamp.gamma, lamp.cool_speed, lamp.cool_dim, lamp.yellow_boost, lamp.red_hold)
+    rainbow = Rainbow(lamp.gamma, lamp.cool_speed, lamp.cool_dim, lamp.yellow_boost,
+                      lamp.red_hold, lamp.yellow_hold)
     begin = time.monotonic()
     while True:
         lamp.show(rainbow.colour((time.monotonic() - begin) / cycle_seconds))
@@ -337,16 +342,18 @@ def parse_args():
     parser.add_argument("--hold", type=float, default=0,
                         help="seconds to stay on each colour before fading to the next (default: 0)")
     parser.add_argument("--rainbow", action="store_true", help="slowly cycle through all colours")
-    parser.add_argument("--cool-speed", type=float, default=2.0, metavar="X",
-                        help="rainbow: move X times faster through green-cyan-blue-purple (default 2; 1 = even)")
+    parser.add_argument("--cool-speed", type=float, default=1.3, metavar="X",
+                        help="rainbow: move X times faster through green-cyan-blue-purple (default 1.3; 1 = even)")
     parser.add_argument("--cool-dim", type=float, default=0.8, metavar="F",
                         help="rainbow: brightness of lime-green-cyan, 0-1 (default 0.8), so yellow stands out")
-    parser.add_argument("--yellow-boost", type=float, default=0.0, metavar="F",
-                        help="rainbow: mix this much blue into yellow, 0-1 (default 0), for a whiter, brighter yellow")
+    parser.add_argument("--yellow-boost", type=float, default=0.2, metavar="F",
+                        help="rainbow: mix this much blue into yellow, 0-1 (default 0.2), for a whiter, brighter yellow")
     parser.add_argument("--gamma", type=float, default=GAMMA,
                         help=f"LED gamma correction (default {GAMMA}); 1 sends raw values")
-    parser.add_argument("--red-hold", type=float, default=3.0, metavar="X",
-                        help="rainbow: linger X times longer on pure red (default 3; 1 = even)")
+    parser.add_argument("--red-hold", type=float, default=5.0, metavar="X",
+                        help="rainbow: linger X times longer on pure red (default 5; 1 = even)")
+    parser.add_argument("--yellow-hold", type=float, default=1.5, metavar="X",
+                        help="rainbow: linger X times longer on pure yellow (default 1.5; 1 = even)")
     parser.add_argument("--list", action="store_true", help="list presets and exit")
     parser.add_argument("--log", action="store_true",
                         help=f"also write messages to {DEFAULT_LOG_FILE}. "
@@ -364,8 +371,8 @@ def parse_args():
         parser.error("hold can't be negative")
     if args.gamma <= 0:
         parser.error("gamma must be more than 0")
-    if args.cool_speed <= 0 or args.red_hold <= 0:
-        parser.error("cool-speed and red-hold must be more than 0")
+    if args.cool_speed <= 0 or args.red_hold <= 0 or args.yellow_hold <= 0:
+        parser.error("cool-speed, red-hold and yellow-hold must be more than 0")
     if not 0 <= args.cool_dim <= 1 or not 0 <= args.yellow_boost <= 1:
         parser.error("cool-dim and yellow-boost must be between 0 and 1")
     if args.log_file is None and (args.log or sys.stderr is None):
@@ -392,7 +399,7 @@ def run(args):
     try:
         gateway = connect(args.verbose, stop)
         lamp = Lamp(gateway, args.brightness, stop, args.gamma,
-                    args.cool_speed, args.cool_dim, args.yellow_boost, args.red_hold)
+                    args.cool_speed, args.cool_dim, args.yellow_boost, args.red_hold, args.yellow_hold)
         log.info("Lamp on")
         while True:
             try:
