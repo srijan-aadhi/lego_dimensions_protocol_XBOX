@@ -20,7 +20,9 @@ If the pad is missing at start-up the script keeps retrying until it appears,
 and if the pad is unplugged while running it reconnects when it comes back.
 """
 import argparse
+import bisect
 import colorsys
+import math
 import logging
 import logging.handlers
 import os
@@ -196,13 +198,58 @@ def run_sequence(lamp, colours, transition, hold):
         index = next_index
 
 
+def oklab_hue(rgb, gamma):
+    """Perceived hue angle (degrees) of a perceptual 0-1 RGB colour, via Oklab"""
+    r, g, b = (c ** gamma for c in rgb)  # to linear light, as the LEDs will emit it
+    l = 0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b
+    m = 0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b
+    s = 0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b
+    l, m, s = (v ** (1 / 3) for v in (l, m, s))
+    a = 1.9779984951 * l - 2.4285922050 * m + 0.4505937099 * s
+    b2 = 0.0259040371 * l + 0.7827717662 * m - 0.8086757660 * s
+    return math.degrees(math.atan2(b2, a))
+
+
+class Rainbow:
+    """
+    The colour wheel, re-timed so the *perceived* hue changes at a constant rate.
+
+    Walking HSV hue at a constant speed looks uneven: the eye sees almost no
+    change near pure red, green and blue, then a sprint through orange, yellow
+    and cyan. This maps an evenly advancing perceived hue (Oklab) back to the
+    HSV hue that produces it.
+    """
+
+    STEPS = 720
+
+    def __init__(self, gamma):
+        self.hsv_hues = [i / self.STEPS for i in range(self.STEPS + 1)]
+        unwrapped = [oklab_hue(colorsys.hsv_to_rgb(self.hsv_hues[0], 1.0, 1.0), gamma)]
+        for h in self.hsv_hues[1:]:
+            angle = oklab_hue(colorsys.hsv_to_rgb(h, 1.0, 1.0), gamma)
+            step = (angle - unwrapped[-1] + 180) % 360 - 180  # shortest signed step
+            unwrapped.append(unwrapped[-1] + max(step, 0.0))
+        span = unwrapped[-1] - unwrapped[0]
+        self.fractions = [(u - unwrapped[0]) / span for u in unwrapped]  # 0..1, increasing
+
+    def colour(self, fraction):
+        """Colour at a point 0-1 around the wheel, evenly spaced to the eye"""
+        fraction %= 1.0
+        i = bisect.bisect_right(self.fractions, fraction) - 1
+        i = min(i, self.STEPS - 1)
+        f0, f1 = self.fractions[i], self.fractions[i + 1]
+        t = (fraction - f0) / (f1 - f0) if f1 > f0 else 0.0
+        hue = self.hsv_hues[i] + (self.hsv_hues[i + 1] - self.hsv_hues[i]) * t
+        r, g, b = colorsys.hsv_to_rgb(hue, 1.0, 1.0)
+        return (round(r * 255), round(g * 255), round(b * 255))
+
+
 def run_rainbow(lamp, cycle_seconds):
     """Walk around the colour wheel, one full lap every cycle_seconds"""
+    rainbow = Rainbow(lamp.gamma)
     begin = time.monotonic()
     while True:
-        hue = ((time.monotonic() - begin) / cycle_seconds) % 1.0
-        r, g, b = colorsys.hsv_to_rgb(hue, 1.0, 1.0)
-        lamp.show((round(r * 255), round(g * 255), round(b * 255)))
+        lamp.show(rainbow.colour((time.monotonic() - begin) / cycle_seconds))
         time.sleep(1 / UPDATES_PER_SECOND)
 
 
