@@ -70,7 +70,7 @@ HUE_NAMES = {"red": 0, "orange": 30, "yellow": 60, "lime": 90, "green": 120, "te
              "cyan": 180, "azure": 210, "blue": 240, "violet": 270, "magenta": 300, "rose": 330}
 # Holds tuned by eye: pure red and yellow are perceptually "flat", so even pacing
 # rushes past them; teal is the green->cyan transition, which looked too brief.
-DEFAULT_HOLDS = {"red": 5.0, "yellow": 1.5, "teal": 1.8}
+DEFAULT_HOLDS = {"red": 5.0, "yellow": 1.5, "teal": 2.3}
 
 # Where the running lamp keeps its state. lamp_off.py uses the same paths.
 STATE_DIR = Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()) / "LegoLamp"
