@@ -36,25 +36,32 @@ from lego_dimensions_gateway import Gateway
 log = logging.getLogger("desk_lamp")
 
 # RGB LEDs look bluish at (255, 255, 255), so "white" presets are tuned warmer.
+# Values are perceptual (like sRGB hex colours); see GAMMA below.
 PRESETS = {
-    "warm": (255, 130, 40),       # cosy, incandescent-bulb feel
-    "soft": (255, 170, 90),       # neutral-warm
-    "daylight": (255, 220, 180),  # the brightest, most "white" option
-    "cool": (200, 220, 255),
-    "reading": (255, 190, 120),
-    "night": (120, 10, 0),        # dim red, easy on the eyes after dark
-    "focus": (150, 200, 255),
+    "warm": (255, 188, 110),       # cosy, incandescent-bulb feel
+    "soft": (255, 212, 159),       # neutral-warm
+    "daylight": (255, 238, 218),  # the brightest, most "white" option
+    "cool": (228, 238, 255),
+    "reading": (255, 223, 181),
+    "night": (181, 59, 0),        # dim red, easy on the eyes after dark
+    "focus": (200, 228, 255),
     "red": (255, 0, 0),
-    "orange": (255, 80, 0),
-    "yellow": (255, 180, 0),
+    "orange": (255, 151, 0),
+    "yellow": (255, 218, 0),
     "green": (0, 255, 0),
-    "teal": (0, 200, 150),
+    "teal": (0, 228, 200),
     "blue": (0, 0, 255),
-    "purple": (140, 0, 255),
-    "pink": (255, 40, 120),
+    "purple": (194, 0, 255),
+    "pink": (255, 110, 181),
 }
 
 UPDATES_PER_SECOND = 20  # how often colours are sent during a fade
+
+# The pad's LEDs are linear: 40/255 is 16% of the light but looks about 40% as
+# bright. Colours are therefore gamma-encoded before sending, so fades and the
+# rainbow move at a steady *visual* pace instead of rushing away from pure
+# red/green/blue. 1.0 sends values unchanged.
+GAMMA = 2.2
 
 # Where the running lamp keeps its state. lamp_off.py uses the same paths.
 STATE_DIR = Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()) / "LegoLamp"
@@ -131,13 +138,19 @@ def blend(a, b, t):
     return tuple(round(x + (y - x) * t) for x, y in zip(a, b))
 
 
+def gamma_encode(colour, gamma):
+    """Turn a perceptual colour into the LED values that look like it"""
+    return tuple(round(255 * (c / 255) ** gamma) for c in colour)
+
+
 class Lamp:
     """Sends colours to the pad, skipping repeats so the USB link isn't flooded"""
 
-    def __init__(self, gateway, brightness, stop):
+    def __init__(self, gateway, brightness, stop, gamma=GAMMA):
         self.gateway = gateway
         self.brightness = brightness
         self.stop = stop
+        self.gamma = gamma
         self.current = None
 
     def reconnected(self, gateway):
@@ -147,7 +160,7 @@ class Lamp:
 
     def show(self, colour):
         self.stop.check()
-        colour = scale(colour, self.brightness)
+        colour = gamma_encode(scale(colour, self.brightness), self.gamma)
         if colour != self.current:
             self.gateway.switch_pad(pad=0, colour=colour)
             self.current = colour
@@ -246,6 +259,8 @@ def parse_args():
     parser.add_argument("--hold", type=float, default=0,
                         help="seconds to stay on each colour before fading to the next (default: 0)")
     parser.add_argument("--rainbow", action="store_true", help="slowly cycle through all colours")
+    parser.add_argument("--gamma", type=float, default=GAMMA,
+                        help=f"LED gamma correction (default {GAMMA}); 1 sends raw values")
     parser.add_argument("--list", action="store_true", help="list presets and exit")
     parser.add_argument("--log", action="store_true",
                         help=f"also write messages to {DEFAULT_LOG_FILE}. "
@@ -261,6 +276,8 @@ def parse_args():
         parser.error("transition must be more than 0 seconds")
     if args.hold < 0:
         parser.error("hold can't be negative")
+    if args.gamma <= 0:
+        parser.error("gamma must be more than 0")
     if args.log_file is None and (args.log or sys.stderr is None):
         args.log_file = DEFAULT_LOG_FILE
     return args
@@ -284,7 +301,7 @@ def run(args):
     gateway = None
     try:
         gateway = connect(args.verbose, stop)
-        lamp = Lamp(gateway, args.brightness, stop)
+        lamp = Lamp(gateway, args.brightness, stop, args.gamma)
         log.info("Lamp on")
         while True:
             try:

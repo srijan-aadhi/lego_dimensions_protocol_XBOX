@@ -71,10 +71,12 @@ The Python files below are Python 3 rewrites of the original Python 2 code.
   - `-t` fade length, or lap length with `--rainbow` (default 5 s, or 60 s for rainbow)
   - `--hold` seconds to stay on each colour
   - `--rainbow` cycle through all colours
+  - `--gamma` LED gamma correction (default 2.2; `1` sends raw values)
   - `--list` show presets
   - `--log` also write messages to `%LOCALAPPDATA%\LegoLamp\desk_lamp.log` (1 MB, 2 backups). Turned on automatically when there is no console. `--log-file FILE` picks another file.
   - `-v` verbose logging (every USB packet, 20 lines a second; don't leave this on in the startup task)
 - **How fades work:** the script mixes the colours itself and sends about 20 updates per second with command `C0` (all pads). It skips repeated colours.
+- **Gamma correction (added 2026-09-23):** the pad's LEDs are linear in light output, but eyes are not: a channel at 40/255 already looks ~40% lit. Without correction the rainbow rushed away from pure red (and green and blue) because the next channel became visible almost immediately. Colours are now treated as perceptual values (like sRGB hex codes) and encoded with `value^2.2` before sending. The presets were converted so they produce the same LED values as before (`warm` is stored as (255,188,110) and reaches the LEDs as (255,130,40)). Hex colours typed on the command line are now interpreted perceptually, which is what a hex code normally means. Lowest steps are still 8-bit: LED value 1 looks ~8% bright, so a channel switching on is the one remaining visible step.
 - **Missing pad:** at start-up it retries with a back-off of 2 s doubling to 30 s until the pad answers, logging only when the error changes. Verified with a busy pad (second instance got `Access denied` and retried). If the pad is unplugged while running, the USB error is caught, the connection is dropped, and the same retry loop waits for it to return. **Not yet tested** with a real unplug.
 - **Stopping:** Ctrl+C, or `lamp_off.py`. Both turn the pads off before exiting.
 - **State files** in `%LOCALAPPDATA%\LegoLamp\`: `desk_lamp.pid` while running, `stop` while a stop is pending, `desk_lamp.log`.
