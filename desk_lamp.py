@@ -247,9 +247,11 @@ def parse_args():
                         help="seconds to stay on each colour before fading to the next (default: 0)")
     parser.add_argument("--rainbow", action="store_true", help="slowly cycle through all colours")
     parser.add_argument("--list", action="store_true", help="list presets and exit")
-    parser.add_argument("--log", nargs="?", const=DEFAULT_LOG_FILE, type=Path, metavar="FILE",
-                        help=f"also write messages to a log file (default file: {DEFAULT_LOG_FILE}). "
+    parser.add_argument("--log", action="store_true",
+                        help=f"also write messages to {DEFAULT_LOG_FILE}. "
                              "Always on when there is no console, e.g. under pythonw.exe.")
+    parser.add_argument("--log-file", type=Path, metavar="FILE",
+                        help="write the log to this file instead of the default one")
     parser.add_argument("-v", "--verbose", action="store_true", help="log every USB packet")
     args = parser.parse_args()
 
@@ -259,8 +261,8 @@ def parse_args():
         parser.error("transition must be more than 0 seconds")
     if args.hold < 0:
         parser.error("hold can't be negative")
-    if args.log is None and sys.stderr is None:
-        args.log = DEFAULT_LOG_FILE
+    if args.log_file is None and (args.log or sys.stderr is None):
+        args.log_file = DEFAULT_LOG_FILE
     return args
 
 
@@ -325,7 +327,7 @@ def main():
         for name, rgb in PRESETS.items():
             print(f"{name:10} #{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}")
         return
-    setup_logging(args.log, args.verbose)
+    setup_logging(args.log_file, args.verbose)
     try:
         run(args)
     except usb.core.NoBackendError:

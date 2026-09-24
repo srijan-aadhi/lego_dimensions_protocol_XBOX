@@ -45,7 +45,7 @@ if ($Uninstall) {
 if (-not (Test-Path $Python)) { throw "pythonw.exe not found at $Python (pass -Python)" }
 if (-not (Test-Path $script)) { throw "desk_lamp.py not found next to this script" }
 
-# --log with no file name = the default log in %LOCALAPPDATA%\LegoLamp
+# --log = write the default log in %LOCALAPPDATA%\LegoLamp
 $action = New-ScheduledTaskAction -Execute $Python `
     -Argument "`"$script`" $Arguments --log" -WorkingDirectory $here
 
