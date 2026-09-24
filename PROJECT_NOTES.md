@@ -10,7 +10,7 @@ Machine-specific details (local paths and the like) live in `LOCAL_NOTES.md`, wh
 ## Status: working, auto-starts at log-on ✅
 - The pad is detected, initialised and lights up.
 - Solid colours, smooth fades between colours, and a rainbow cycle all work on the real hardware.
-- A Task Scheduler task starts the lamp hidden 30 s after log-on (rainbow, 20 s per lap).
+- A Task Scheduler task starts the lamp hidden 30 s after log-on (rainbow, 20 s per lap). Verified after a real reboot on 2026-09-23: the task fired 34 s after log-on, but the lamp took about 2 minutes to come on (slow Python start-up on a cold boot, then ~16 s to connect).
 - The lamp waits for the pad if it is missing, logs to a file, and can be stopped cleanly with `lamp_off.py`. Reconnecting after an unplug is implemented but has not been tried with a real unplug yet.
 
 ## Environment
@@ -54,7 +54,7 @@ The Python files below are Python 3 rewrites of the original Python 2 code.
   1. Clear any waiting messages, then send the wrapped wake message.
   2. If a LEGO reply arrives, the pad is already unlocked.
   3. Otherwise send GIP authenticate (`06 20 <seq> 02 01 00`), wait, and resend the wake if needed.
-- On this pad the observed path is **"already unlocked"**: the wake reply arrives immediately, and every command gets the acknowledgment `55 01 02 58`. The authenticate branch has not been exercised yet; after a cold boot, check the log for "Unlocking Xbox One portal".
+- On this pad the observed path is **"already unlocked"**: the wake reply arrives immediately, and every command gets the acknowledgment `55 01 02 58`. The handshake milestones ("Found portal", "already unlocked" or "Unlocking Xbox One portal", "portal ready") and the connect time are always logged, so the log from an unattended start shows which path ran.
 - **Bug fixed:** the routine that clears waiting messages originally looped forever and hung at "Initialising portal". It is now time-limited: 0.25 s at start-up and 0.05 s after each command, so fades stay smooth.
 - Every USB write has a 1 s timeout.
 - The optional `libusb_package` backend is used when it's installed.

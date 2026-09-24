@@ -85,8 +85,10 @@ class Gateway:
             raise ValueError('Device not found')
 
         self.is_xbox_one = (dev.idProduct == XBOX_ONE_PRODUCT_ID)
-        self._log(f"Found portal {dev.idVendor:04x}:{dev.idProduct:04x}"
-                  f"{' (Xbox One)' if self.is_xbox_one else ''}")
+        # Handshake milestones always log (not just in verbose mode) so a log file
+        # from an unattended start-up shows which initialisation path ran.
+        log.info(f"Found portal {dev.idVendor:04x}:{dev.idProduct:04x}"
+                 f"{' (Xbox One)' if self.is_xbox_one else ''}")
 
         self.reattach = False
         try:
@@ -162,10 +164,10 @@ class Gateway:
         self._log("Sending wake message")
         self.dev.write(EP_OUT, self._gip_packet(GIP_LEGO_GATEWAY, 0x00, WAKE_MESSAGE), timeout=1000)
         if self._wait_for_lego_response(timeout_s=1.0):
-            self._log("Xbox One portal was already unlocked")
+            log.info("Xbox One portal was already unlocked")
             return
 
-        self._log("Unlocking Xbox One portal")
+        log.info("Unlocking Xbox One portal (sending GIP authenticate)")
         self.dev.write(EP_OUT, self._gip_packet(GIP_AUTHENTICATE, 0x20, [0x01, 0x00]), timeout=1000)
         # The portal normally answers the wake it already queued; if not, send it again
         if not self._wait_for_lego_response(timeout_s=2.0):
@@ -173,7 +175,7 @@ class Gateway:
             if not self._wait_for_lego_response(timeout_s=2.0):
                 raise RuntimeError("Xbox One portal did not respond to initialisation. "
                                    "Try unplugging it and plugging it back in.")
-        self._log("Xbox One portal ready")
+        log.info("Xbox One portal ready")
 
     def generate_checksum_for_command(self, command):
         """

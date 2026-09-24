@@ -200,6 +200,7 @@ def connect(verbose, stop):
     """
     delay = RETRY_MIN_SECONDS
     last_error = None
+    began = time.monotonic()
     while True:
         try:
             gateway = Gateway(verbose=verbose)
@@ -213,8 +214,7 @@ def connect(verbose, stop):
             pause(delay, stop)
             delay = min(delay * 2, RETRY_MAX_SECONDS)
             continue
-        if last_error is not None:
-            log.info("Toy pad connected")
+        log.info("Toy pad connected after %.1f s", time.monotonic() - began)
         return gateway
 
 
