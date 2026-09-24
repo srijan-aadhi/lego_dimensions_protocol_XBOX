@@ -65,6 +65,13 @@ UPDATES_PER_SECOND = 20  # how often colours are sent during a fade
 # red/green/blue. 1.0 sends values unchanged.
 GAMMA = 2.2
 
+# Hue names for --dwell, in HSV degrees.
+HUE_NAMES = {"red": 0, "orange": 30, "yellow": 60, "lime": 90, "green": 120, "teal": 150,
+             "cyan": 180, "azure": 210, "blue": 240, "violet": 270, "magenta": 300, "rose": 330}
+# Holds tuned by eye: pure red and yellow are perceptually "flat", so even pacing
+# rushes past them; teal is the green->cyan transition, which looked too brief.
+DEFAULT_HOLDS = {"red": 5.0, "yellow": 1.5, "teal": 1.8}
+
 # Where the running lamp keeps its state. lamp_off.py uses the same paths.
 STATE_DIR = Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()) / "LegoLamp"
 STOP_FILE = STATE_DIR / "stop"            # created by lamp_off.py to ask the lamp to exit
@@ -131,6 +138,20 @@ def parse_colour(text):
         f"'{text}' is not a preset ({', '.join(PRESETS)}) or a hex colour like ff8800")
 
 
+def parse_hold(text):
+    """Parse COLOUR=X (a hue name or degrees, and a slow-down factor) for --dwell"""
+    try:
+        where, factor = text.split("=", 1)
+        where = where.strip().lower()
+        hue = HUE_NAMES[where] if where in HUE_NAMES else float(where) % 360
+        factor = float(factor)
+    except (ValueError, KeyError):
+        raise argparse.ArgumentTypeError(f"'{text}' should look like red=5 or 150=2")
+    if factor <= 0:
+        raise argparse.ArgumentTypeError("dwell factor must be more than 0")
+    return hue, factor
+
+
 def scale(colour, brightness):
     return tuple(round(c * brightness / 100) for c in colour)
 
@@ -149,7 +170,7 @@ class Lamp:
     """Sends colours to the pad, skipping repeats so the USB link isn't flooded"""
 
     def __init__(self, gateway, brightness, stop, gamma=GAMMA,
-                 cool_speed=1.0, cool_dim=1.0, yellow_boost=0.0, red_hold=1.0, yellow_hold=1.0):
+                 cool_speed=1.0, cool_dim=1.0, yellow_boost=0.0, holds=None):
         self.gateway = gateway
         self.brightness = brightness
         self.stop = stop
@@ -157,8 +178,7 @@ class Lamp:
         self.cool_speed = cool_speed
         self.cool_dim = cool_dim
         self.yellow_boost = yellow_boost
-        self.red_hold = red_hold
-        self.yellow_hold = yellow_hold
+        self.holds = holds or {}
         self.current = None
 
     def reconnected(self, gateway):
@@ -228,8 +248,7 @@ class Rainbow:
 
     STEPS = 720
 
-    def __init__(self, gamma, cool_speed=1.0, cool_dim=1.0, yellow_boost=0.0,
-                 red_hold=1.0, yellow_hold=1.0):
+    def __init__(self, gamma, cool_speed=1.0, cool_dim=1.0, yellow_boost=0.0, holds=None):
         """
         cool_speed: how many times faster to move through green-cyan-blue-purple.
             The eye has one word ("blue") for a stretch that is as wide as
@@ -237,10 +256,10 @@ class Rainbow:
         cool_dim: brightness multiplier for lime-green-cyan (1 = none). These are
             nearly as light as yellow; dimming them makes yellow the visible peak.
         yellow_boost: blue mixed into yellow (0-1). Whiter yellow reads brighter.
-        red_hold: how many times slower to move through pure red. Perceived hue
-            barely changes across red, so even pacing sweeps through it in a
-            couple of seconds; holding gives it a share like yellow's.
-        yellow_hold: the same for pure yellow.
+        holds: {hue_degrees: factor}. Move `factor` times slower around that hue
+            (raised-cosine window, half-width 30 degrees). Perceived hue barely
+            changes across pure red, for instance, so even pacing sweeps through
+            it in a couple of seconds; a hold gives it a share like yellow's.
         """
         self.cool_dim = cool_dim
         self.yellow_boost = yellow_boost
@@ -253,8 +272,8 @@ class Rainbow:
             previous = angle
             # Speeding up = each perceived step counts for less of the lap.
             weight = 1.0 - (1.0 - 1.0 / cool_speed) * self.bump(h * 360, 195, 105)
-            weight *= 1.0 + (red_hold - 1.0) * self.bump(h * 360, 0, 30)
-            weight *= 1.0 + (yellow_hold - 1.0) * self.bump(h * 360, 60, 30)
+            for hue_deg, factor in (holds or {}).items():
+                weight *= 1.0 + (factor - 1.0) * self.bump(h * 360, hue_deg, 30)
             unwrapped.append(unwrapped[-1] + max(step, 0.0) * weight)
         self.fractions = [u / unwrapped[-1] for u in unwrapped]  # 0..1, increasing
 
@@ -281,8 +300,7 @@ class Rainbow:
 
 def run_rainbow(lamp, cycle_seconds):
     """Walk around the colour wheel, one full lap every cycle_seconds"""
-    rainbow = Rainbow(lamp.gamma, lamp.cool_speed, lamp.cool_dim, lamp.yellow_boost,
-                      lamp.red_hold, lamp.yellow_hold)
+    rainbow = Rainbow(lamp.gamma, lamp.cool_speed, lamp.cool_dim, lamp.yellow_boost, lamp.holds)
     begin = time.monotonic()
     while True:
         lamp.show(rainbow.colour((time.monotonic() - begin) / cycle_seconds))
@@ -350,10 +368,10 @@ def parse_args():
                         help="rainbow: mix this much blue into yellow, 0-1 (default 0.2), for a whiter, brighter yellow")
     parser.add_argument("--gamma", type=float, default=GAMMA,
                         help=f"LED gamma correction (default {GAMMA}); 1 sends raw values")
-    parser.add_argument("--red-hold", type=float, default=5.0, metavar="X",
-                        help="rainbow: linger X times longer on pure red (default 5; 1 = even)")
-    parser.add_argument("--yellow-hold", type=float, default=1.5, metavar="X",
-                        help="rainbow: linger X times longer on pure yellow (default 1.5; 1 = even)")
+    parser.add_argument("--dwell", action="append", type=parse_hold, default=[], metavar="COLOUR=X",
+                        help="rainbow: linger X times longer around a hue, e.g. red=5 or 150=2. "
+                             f"Colours: {', '.join(HUE_NAMES)}. Repeatable; overrides the defaults "
+                             f"({', '.join(f'{k}={v:g}' for k, v in DEFAULT_HOLDS.items())}); 1 = even")
     parser.add_argument("--list", action="store_true", help="list presets and exit")
     parser.add_argument("--log", action="store_true",
                         help=f"also write messages to {DEFAULT_LOG_FILE}. "
@@ -371,8 +389,11 @@ def parse_args():
         parser.error("hold can't be negative")
     if args.gamma <= 0:
         parser.error("gamma must be more than 0")
-    if args.cool_speed <= 0 or args.red_hold <= 0 or args.yellow_hold <= 0:
-        parser.error("cool-speed, red-hold and yellow-hold must be more than 0")
+    if args.cool_speed <= 0:
+        parser.error("cool-speed must be more than 0")
+    holds = {HUE_NAMES[name]: factor for name, factor in DEFAULT_HOLDS.items()}
+    holds.update(dict(args.dwell))
+    args.holds = holds
     if not 0 <= args.cool_dim <= 1 or not 0 <= args.yellow_boost <= 1:
         parser.error("cool-dim and yellow-boost must be between 0 and 1")
     if args.log_file is None and (args.log or sys.stderr is None):
@@ -399,7 +420,7 @@ def run(args):
     try:
         gateway = connect(args.verbose, stop)
         lamp = Lamp(gateway, args.brightness, stop, args.gamma,
-                    args.cool_speed, args.cool_dim, args.yellow_boost, args.red_hold, args.yellow_hold)
+                    args.cool_speed, args.cool_dim, args.yellow_boost, args.holds)
         log.info("Lamp on")
         while True:
             try:
