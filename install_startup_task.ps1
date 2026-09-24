@@ -4,7 +4,7 @@
 
 .DESCRIPTION
     Registers a Task Scheduler task that runs desk_lamp.py hidden (pythonw.exe)
-    as soon as you log on, in rainbow mode with a 60-second lap and a log file
+    as soon as you log on, in rainbow mode with a 62.3-second lap and a log file
     in %LOCALAPPDATA%\LegoLamp. desk_lamp.py itself waits for the pad if USB is
     not ready yet, so no start delay is needed.
 
@@ -23,7 +23,7 @@
 #>
 param(
     [switch]$Uninstall,
-    [string]$Arguments = '--rainbow -t 60',
+    [string]$Arguments = '--rainbow -t 62.3',
     [string]$TaskName = 'Lego Dimensions Desk Lamp',
     [int]$DelaySeconds = 0,
     [string]$Python = (Join-Path $env:LOCALAPPDATA 'Programs\Python\Python312\pythonw.exe')
