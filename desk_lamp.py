@@ -148,11 +148,15 @@ def gamma_encode(colour, gamma):
 class Lamp:
     """Sends colours to the pad, skipping repeats so the USB link isn't flooded"""
 
-    def __init__(self, gateway, brightness, stop, gamma=GAMMA):
+    def __init__(self, gateway, brightness, stop, gamma=GAMMA,
+                 cool_speed=1.0, cool_dim=1.0, yellow_boost=0.0):
         self.gateway = gateway
         self.brightness = brightness
         self.stop = stop
         self.gamma = gamma
+        self.cool_speed = cool_speed
+        self.cool_dim = cool_dim
+        self.yellow_boost = yellow_boost
         self.current = None
 
     def reconnected(self, gateway):
@@ -222,15 +226,34 @@ class Rainbow:
 
     STEPS = 720
 
-    def __init__(self, gamma):
+    def __init__(self, gamma, cool_speed=1.0, cool_dim=1.0, yellow_boost=0.0):
+        """
+        cool_speed: how many times faster to move through green-cyan-blue-purple.
+            The eye has one word ("blue") for a stretch that is as wide as
+            red+orange+yellow, so an evenly paced wheel feels slow there.
+        cool_dim: brightness multiplier for lime-green-cyan (1 = none). These are
+            nearly as light as yellow; dimming them makes yellow the visible peak.
+        yellow_boost: blue mixed into yellow (0-1). Whiter yellow reads brighter.
+        """
+        self.cool_dim = cool_dim
+        self.yellow_boost = yellow_boost
         self.hsv_hues = [i / self.STEPS for i in range(self.STEPS + 1)]
-        unwrapped = [oklab_hue(colorsys.hsv_to_rgb(self.hsv_hues[0], 1.0, 1.0), gamma)]
+        previous = oklab_hue(colorsys.hsv_to_rgb(self.hsv_hues[0], 1.0, 1.0), gamma)
+        unwrapped = [0.0]
         for h in self.hsv_hues[1:]:
             angle = oklab_hue(colorsys.hsv_to_rgb(h, 1.0, 1.0), gamma)
-            step = (angle - unwrapped[-1] + 180) % 360 - 180  # shortest signed step
-            unwrapped.append(unwrapped[-1] + max(step, 0.0))
-        span = unwrapped[-1] - unwrapped[0]
-        self.fractions = [(u - unwrapped[0]) / span for u in unwrapped]  # 0..1, increasing
+            step = (angle - previous + 180) % 360 - 180  # shortest signed step
+            previous = angle
+            # Speeding up = each perceived step counts for less of the lap.
+            weight = 1.0 - (1.0 - 1.0 / cool_speed) * self.bump(h * 360, 195, 105)
+            unwrapped.append(unwrapped[-1] + max(step, 0.0) * weight)
+        self.fractions = [u / unwrapped[-1] for u in unwrapped]  # 0..1, increasing
+
+    @staticmethod
+    def bump(hue_deg, centre, half_width):
+        """Raised-cosine window: 1 at centre, fading smoothly to 0 at +/- half_width"""
+        d = abs((hue_deg - centre + 180) % 360 - 180)
+        return 0.5 * (1 + math.cos(math.pi * d / half_width)) if d < half_width else 0.0
 
     def colour(self, fraction):
         """Colour at a point 0-1 around the wheel, evenly spaced to the eye"""
@@ -241,12 +264,15 @@ class Rainbow:
         t = (fraction - f0) / (f1 - f0) if f1 > f0 else 0.0
         hue = self.hsv_hues[i] + (self.hsv_hues[i + 1] - self.hsv_hues[i]) * t
         r, g, b = colorsys.hsv_to_rgb(hue, 1.0, 1.0)
-        return (round(r * 255), round(g * 255), round(b * 255))
+        deg = hue * 360
+        dim = 1.0 - (1.0 - self.cool_dim) * self.bump(deg, 150, 75)   # lime..green..cyan..azure
+        b = min(1.0, b + self.yellow_boost * self.bump(deg, 60, 30))  # whiten around yellow
+        return (round(r * dim * 255), round(g * dim * 255), round(b * dim * 255))
 
 
 def run_rainbow(lamp, cycle_seconds):
     """Walk around the colour wheel, one full lap every cycle_seconds"""
-    rainbow = Rainbow(lamp.gamma)
+    rainbow = Rainbow(lamp.gamma, lamp.cool_speed, lamp.cool_dim, lamp.yellow_boost)
     begin = time.monotonic()
     while True:
         lamp.show(rainbow.colour((time.monotonic() - begin) / cycle_seconds))
@@ -306,6 +332,12 @@ def parse_args():
     parser.add_argument("--hold", type=float, default=0,
                         help="seconds to stay on each colour before fading to the next (default: 0)")
     parser.add_argument("--rainbow", action="store_true", help="slowly cycle through all colours")
+    parser.add_argument("--cool-speed", type=float, default=2.0, metavar="X",
+                        help="rainbow: move X times faster through green-cyan-blue-purple (default 2; 1 = even)")
+    parser.add_argument("--cool-dim", type=float, default=0.8, metavar="F",
+                        help="rainbow: brightness of lime-green-cyan, 0-1 (default 0.8), so yellow stands out")
+    parser.add_argument("--yellow-boost", type=float, default=0.0, metavar="F",
+                        help="rainbow: mix this much blue into yellow, 0-1 (default 0), for a whiter, brighter yellow")
     parser.add_argument("--gamma", type=float, default=GAMMA,
                         help=f"LED gamma correction (default {GAMMA}); 1 sends raw values")
     parser.add_argument("--list", action="store_true", help="list presets and exit")
@@ -325,6 +357,10 @@ def parse_args():
         parser.error("hold can't be negative")
     if args.gamma <= 0:
         parser.error("gamma must be more than 0")
+    if args.cool_speed <= 0:
+        parser.error("cool-speed must be more than 0")
+    if not 0 <= args.cool_dim <= 1 or not 0 <= args.yellow_boost <= 1:
+        parser.error("cool-dim and yellow-boost must be between 0 and 1")
     if args.log_file is None and (args.log or sys.stderr is None):
         args.log_file = DEFAULT_LOG_FILE
     return args
@@ -348,7 +384,8 @@ def run(args):
     gateway = None
     try:
         gateway = connect(args.verbose, stop)
-        lamp = Lamp(gateway, args.brightness, stop, args.gamma)
+        lamp = Lamp(gateway, args.brightness, stop, args.gamma,
+                    args.cool_speed, args.cool_dim, args.yellow_boost)
         log.info("Lamp on")
         while True:
             try:
