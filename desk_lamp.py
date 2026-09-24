@@ -12,14 +12,28 @@ Examples:
     python desk_lamp.py --rainbow -t 120     # ...one full cycle every 2 minutes
     python desk_lamp.py --list               # show presets
 
-The lamp stays on while the script runs. Press Ctrl+C to turn it off.
+The lamp stays on while the script runs. Press Ctrl+C to turn it off, or run
+lamp_off.py from another window (the only way when the lamp was started
+hidden by Task Scheduler, see install_startup_task.ps1).
+
+If the pad is missing at start-up the script keeps retrying until it appears,
+and if the pad is unplugged while running it reconnects when it comes back.
 """
 import argparse
 import colorsys
+import logging
+import logging.handlers
+import os
 import sys
+import tempfile
 import time
+from pathlib import Path
+
+import usb.core
 
 from lego_dimensions_gateway import Gateway
+
+log = logging.getLogger("desk_lamp")
 
 # RGB LEDs look bluish at (255, 255, 255), so "white" presets are tuned warmer.
 PRESETS = {
@@ -41,6 +55,56 @@ PRESETS = {
 }
 
 UPDATES_PER_SECOND = 20  # how often colours are sent during a fade
+
+# Where the running lamp keeps its state. lamp_off.py uses the same paths.
+STATE_DIR = Path(os.environ.get("LOCALAPPDATA") or tempfile.gettempdir()) / "LegoLamp"
+STOP_FILE = STATE_DIR / "stop"            # created by lamp_off.py to ask the lamp to exit
+PID_FILE = STATE_DIR / "desk_lamp.pid"    # exists while a lamp is running
+DEFAULT_LOG_FILE = STATE_DIR / "desk_lamp.log"
+
+# Reconnect back-off when the pad is missing: start quick, settle at a slow poll.
+RETRY_MIN_SECONDS = 2
+RETRY_MAX_SECONDS = 30
+
+# Errors that mean "no usable pad right now" rather than a bug in the script.
+PAD_ERRORS = (ValueError, RuntimeError, usb.core.USBError)
+
+
+class StopRequested(Exception):
+    """Raised from inside the colour loops when lamp_off.py asks us to stop"""
+
+
+class StopSignal:
+    """Watches for the stop file, checking the disk at most twice a second"""
+
+    def __init__(self, path):
+        self.path = path
+        self._next_check = 0.0
+
+    def clear(self):
+        try:
+            self.path.unlink()
+        except FileNotFoundError:
+            pass
+
+    def check(self):
+        now = time.monotonic()
+        if now < self._next_check:
+            return
+        self._next_check = now + 0.5
+        if self.path.exists():
+            raise StopRequested
+
+
+def pause(seconds, stop):
+    """time.sleep() that still notices a stop request"""
+    end = time.monotonic() + seconds
+    while True:
+        stop.check()
+        remaining = end - time.monotonic()
+        if remaining <= 0:
+            return
+        time.sleep(min(remaining, 0.5))
 
 
 def parse_colour(text):
@@ -70,12 +134,19 @@ def blend(a, b, t):
 class Lamp:
     """Sends colours to the pad, skipping repeats so the USB link isn't flooded"""
 
-    def __init__(self, gateway, brightness):
+    def __init__(self, gateway, brightness, stop):
         self.gateway = gateway
         self.brightness = brightness
+        self.stop = stop
+        self.current = None
+
+    def reconnected(self, gateway):
+        """Use a fresh Gateway after the pad came back; the next colour is always resent"""
+        self.gateway = gateway
         self.current = None
 
     def show(self, colour):
+        self.stop.check()
         colour = scale(colour, self.brightness)
         if colour != self.current:
             self.gateway.switch_pad(pad=0, colour=colour)
@@ -94,12 +165,19 @@ def fade(lamp, start, end, seconds):
         time.sleep(1 / UPDATES_PER_SECOND)
 
 
+def run_single(lamp, colour):
+    """Fade the colour in gently, then hold it"""
+    fade(lamp, (0, 0, 0), colour, 1.5)
+    while True:
+        pause(3600, lamp.stop)
+
+
 def run_sequence(lamp, colours, transition, hold):
     """Loop through the colours forever, fading from each one to the next"""
     lamp.show(colours[0])
     index = 0
     while True:
-        time.sleep(hold)
+        pause(hold, lamp.stop)
         next_index = (index + 1) % len(colours)
         fade(lamp, colours[index], colours[next_index], transition)
         index = next_index
@@ -115,7 +193,48 @@ def run_rainbow(lamp, cycle_seconds):
         time.sleep(1 / UPDATES_PER_SECOND)
 
 
-def main():
+def connect(verbose, stop):
+    """
+    Open the pad, retrying until it is plugged in and answering.
+    Logs the first failure (and any new kind of failure) rather than every attempt.
+    """
+    delay = RETRY_MIN_SECONDS
+    last_error = None
+    while True:
+        try:
+            gateway = Gateway(verbose=verbose)
+        except usb.core.NoBackendError:
+            raise  # libusb itself is missing; retrying won't help
+        except PAD_ERRORS as error:
+            message = f"{type(error).__name__}: {error}"
+            if message != last_error:
+                log.warning("Toy pad not available (%s). Retrying until it appears.", message)
+                last_error = message
+            pause(delay, stop)
+            delay = min(delay * 2, RETRY_MAX_SECONDS)
+            continue
+        if last_error is not None:
+            log.info("Toy pad connected")
+        return gateway
+
+
+def setup_logging(log_file, verbose):
+    root = logging.getLogger()
+    root.setLevel(logging.DEBUG if verbose else logging.INFO)
+    formatter = logging.Formatter("%(asctime)s %(levelname)-7s %(message)s", "%Y-%m-%d %H:%M:%S")
+    if sys.stderr is not None:  # None when started with pythonw.exe
+        console = logging.StreamHandler()
+        console.setFormatter(formatter)
+        root.addHandler(console)
+    if log_file is not None:
+        log_file.parent.mkdir(parents=True, exist_ok=True)
+        handler = logging.handlers.RotatingFileHandler(
+            log_file, maxBytes=1_000_000, backupCount=2, encoding="utf-8")
+        handler.setFormatter(formatter)
+        root.addHandler(handler)
+
+
+def parse_args():
     parser = argparse.ArgumentParser(description="Lego Dimensions toy pad desk lamp")
     parser.add_argument("colours", nargs="*", type=parse_colour,
                         help="one or more preset names or hex colours (default: warm). "
@@ -128,13 +247,11 @@ def main():
                         help="seconds to stay on each colour before fading to the next (default: 0)")
     parser.add_argument("--rainbow", action="store_true", help="slowly cycle through all colours")
     parser.add_argument("--list", action="store_true", help="list presets and exit")
-    parser.add_argument("-v", "--verbose", action="store_true", help="print USB packets")
+    parser.add_argument("--log", nargs="?", const=DEFAULT_LOG_FILE, type=Path, metavar="FILE",
+                        help=f"also write messages to a log file (default file: {DEFAULT_LOG_FILE}). "
+                             "Always on when there is no console, e.g. under pythonw.exe.")
+    parser.add_argument("-v", "--verbose", action="store_true", help="log every USB packet")
     args = parser.parse_args()
-
-    if args.list:
-        for name, rgb in PRESETS.items():
-            print(f"{name:10} #{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}")
-        return
 
     if not 1 <= args.brightness <= 100:
         parser.error("brightness must be between 1 and 100")
@@ -142,30 +259,83 @@ def main():
         parser.error("transition must be more than 0 seconds")
     if args.hold < 0:
         parser.error("hold can't be negative")
+    if args.log is None and sys.stderr is None:
+        args.log = DEFAULT_LOG_FILE
+    return args
+
+
+def run(args):
+    stop = StopSignal(STOP_FILE)
+    stop.clear()  # a stop file left over from a crash must not stop us straight away
+    STATE_DIR.mkdir(parents=True, exist_ok=True)
+    PID_FILE.write_text(str(os.getpid()))
 
     colours = args.colours or [PRESETS["warm"]]
+    if args.rainbow:
+        mode = f"rainbow, {args.transition or 60:g} s per lap"
+    elif len(colours) > 1:
+        mode = f"fading between {len(colours)} colours"
+    else:
+        mode = "#%02x%02x%02x" % colours[0]
+    log.info("Lamp starting (%s, brightness %d%%). Stop with Ctrl+C or lamp_off.py.", mode, args.brightness)
 
+    gateway = None
     try:
-        gateway = Gateway(verbose=args.verbose)
-    except ValueError:
-        sys.exit("Toy pad not found. Is it plugged in, and is the WinUSB/libusb driver installed?")
-
-    lamp = Lamp(gateway, args.brightness)
-    print("Lamp on. Press Ctrl+C to turn it off.")
-    try:
-        if args.rainbow:
-            run_rainbow(lamp, args.transition or 60)
-        elif len(colours) > 1:
-            run_sequence(lamp, colours, args.transition or 5, args.hold)
-        else:
-            fade(lamp, (0, 0, 0), colours[0], 1.5)  # gentle switch-on
-            while True:
-                time.sleep(3600)
+        gateway = connect(args.verbose, stop)
+        lamp = Lamp(gateway, args.brightness, stop)
+        log.info("Lamp on")
+        while True:
+            try:
+                if args.rainbow:
+                    run_rainbow(lamp, args.transition or 60)
+                elif len(colours) > 1:
+                    run_sequence(lamp, colours, args.transition or 5, args.hold)
+                else:
+                    run_single(lamp, colours[0])
+            except usb.core.USBError as error:
+                # The pad was unplugged (or USB hiccuped) mid-run. Drop the dead
+                # handle and wait for it to come back.
+                log.warning("Lost contact with the toy pad (%s). Waiting for it to return.", error)
+                gateway.close()
+                gateway = None
+                gateway = connect(args.verbose, stop)
+                lamp.reconnected(gateway)
+                log.info("Lamp back on")
     except KeyboardInterrupt:
-        gateway.blank_pads()
-        print("\nLamp off")
+        log.info("Ctrl+C: lamp off")
+    except StopRequested:
+        log.info("Stop requested: lamp off")
     finally:
-        gateway.close()
+        if gateway is not None:
+            try:
+                gateway.blank_pads()
+            except usb.core.USBError as error:
+                log.warning("Could not turn the pads off (%s)", error)
+            gateway.close()
+        stop.clear()
+        try:
+            PID_FILE.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def main():
+    args = parse_args()
+    if args.list:
+        for name, rgb in PRESETS.items():
+            print(f"{name:10} #{rgb[0]:02x}{rgb[1]:02x}{rgb[2]:02x}")
+        return
+    setup_logging(args.log, args.verbose)
+    try:
+        run(args)
+    except usb.core.NoBackendError:
+        log.critical("libusb was not found. Install the libusb-package wheel from deps/ "
+                     "(see PROJECT_NOTES.md).")
+        sys.exit(1)
+    except Exception:
+        # Under pythonw.exe an uncaught exception would vanish silently.
+        log.exception("Lamp crashed")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

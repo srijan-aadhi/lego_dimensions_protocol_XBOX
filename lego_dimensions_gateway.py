@@ -17,10 +17,13 @@
 # 01 0xc6 - fade_pads()   - Fade pad(s) to value(s)
 # 01 0xc7 - flash_pads()  - Flash all 3 pads with individual colours and rates, either change to new or return to old based on pulse count
 
+import logging
 import time
 
 import usb.core
 import usb.util
+
+log = logging.getLogger(__name__)
 
 VENDOR_ID = 0x0e6f           # Logic3/PDP (made lego dimensions portal hardware)
 XBOX_ONE_PRODUCT_ID = 0x0141  # Xbox One portal; talks GIP instead of plain HID
@@ -65,8 +68,10 @@ class Gateway:
         self.blank_pads()
 
     def _log(self, text):
+        """Verbose diagnostics go through the logging module so they still reach a
+        log file when the script runs without a console (pythonw.exe)."""
         if self.verbose:
-            print(text)
+            log.info(text)
 
     def _init_usb(self):
         """
@@ -474,6 +479,7 @@ def debug():
 
 
 def main():
+    logging.basicConfig(level=logging.INFO, format="%(message)s")
     debug()
 
 
