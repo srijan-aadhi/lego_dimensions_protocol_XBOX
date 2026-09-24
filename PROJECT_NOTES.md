@@ -10,7 +10,7 @@ Machine-specific details (local paths and the like) live in `LOCAL_NOTES.md`, wh
 ## Status: working, auto-starts at log-on ✅
 - The pad is detected, initialised and lights up.
 - Solid colours, smooth fades between colours, and a rainbow cycle all work on the real hardware.
-- A Task Scheduler task starts the lamp hidden 30 s after log-on (rainbow, 20 s per lap). Verified after a real reboot on 2026-09-23: the task fired 34 s after log-on, but the lamp took about 2 minutes to come on (slow Python start-up on a cold boot, then ~16 s to connect).
+- A Task Scheduler task starts the lamp hidden at log-on (rainbow, 20 s per lap). Verified after a real reboot on 2026-09-23: the task fired on time (then with a 30 s delay), but the lamp took about 2 minutes to come on: Python needed ~65 s to start on the cold boot and ~16 s to connect. The delay has since been removed and the task priority raised; a warm start takes ~1 s from task start to "Lamp on".
 - The lamp waits for the pad if it is missing, logs to a file, and can be stopped cleanly with `lamp_off.py`. Reconnecting after an unplug is implemented but has not been tried with a real unplug yet.
 
 ## Environment
@@ -85,9 +85,9 @@ Creates the `stop` file and waits for the running lamp to delete it as it exits 
 ### `install_startup_task.ps1`
 Registers (or updates) the Task Scheduler task **"Lego Dimensions Desk Lamp"** and starts it:
 - Runs `pythonw.exe desk_lamp.py --rainbow -t 20 --log` from the project folder, so there is no console window.
-- Trigger: at log-on of the current user, 30 s delay so USB has enumerated the pad.
+- Trigger: at log-on of the current user, no delay (the lamp waits for the pad itself). `-DelaySeconds N` adds one if ever needed.
 - Runs only when the user is logged on (interactive token); background tasks can't reach USB reliably.
-- No execution time limit (the default would kill it after 3 days), starts on battery, doesn't stop on battery, ignores a second start while running.
+- No execution time limit (the default would kill it after 3 days), normal process priority (Task Scheduler's default is below normal, which gets starved during log-on), starts on battery, doesn't stop on battery, ignores a second start while running.
 - `-Arguments '...'` changes the lamp options, `-Uninstall` turns the lamp off and removes the task.
 - If PowerShell blocks the script: `powershell -ExecutionPolicy Bypass -File .\install_startup_task.ps1`
 - If the project folder lives in OneDrive and "Files On-Demand" ever dehydrates it, `pythonw` may find placeholders at log-on before OneDrive has started. Right-click the project folder → **Always keep on this device** to prevent that.
@@ -107,6 +107,7 @@ Get-Content $env:LOCALAPPDATA\LegoLamp\desk_lamp.log -Tail 20
 Stop the auto-started lamp with `lamp_off.py` before running `desk_lamp.py` by hand, otherwise the manual one waits for the pad.
 
 ## Ideas not done
+- **Faster cold boot.** The ~65 s before Python's first line on a cold boot is Windows-side (disk contention from start-up apps, antivirus scanning the interpreter). If it matters, a Microsoft Defender exclusion for the Python folder is the usual lever; it needs admin and is a security trade-off.
 - **Tray icon** for on/off. Skipped because pip is offline on this PC and it would need more wheels (pystray, Pillow).
 - **Turn off at sleep/shutdown.** A `pythonw` process gets no Ctrl+C or window message, so the pads keep their last colour until USB power drops. Waking from sleep should be fine: the USB error path reconnects.
 - **Restore the Xbox driver** if the pad is ever needed on the console again.
