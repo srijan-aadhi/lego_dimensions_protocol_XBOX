@@ -388,6 +388,8 @@ def parse_args():
                         help="rainbow: mix this much blue into yellow, 0-1 (default 0.2), for a whiter, brighter yellow")
     parser.add_argument("--gamma", type=float, default=GAMMA,
                         help=f"LED gamma correction (default {GAMMA}); 1 sends raw values")
+    parser.add_argument("--even", action="store_true",
+                        help="rainbow: constant perceived speed all the way round (ignores --cool-speed and all dwells)")
     parser.add_argument("--dwell", action="append", type=parse_hold, default=[], metavar="COLOUR=X",
                         help="rainbow: linger X times longer around a hue, e.g. red=5 or 150=2. "
                              f"Colours: {', '.join(HUE_NAMES)}. Repeatable; overrides the defaults "
@@ -411,9 +413,13 @@ def parse_args():
         parser.error("gamma must be more than 0")
     if args.cool_speed <= 0:
         parser.error("cool-speed must be more than 0")
-    holds = {HUE_NAMES[name]: factor for name, factor in DEFAULT_HOLDS.items()}
-    holds.update(dict(args.dwell))
-    args.holds = holds
+    if args.even:
+        args.cool_speed = 1.0
+        args.holds = {}
+    else:
+        holds = {HUE_NAMES[name]: factor for name, factor in DEFAULT_HOLDS.items()}
+        holds.update(dict(args.dwell))
+        args.holds = holds
     if not 0 <= args.cool_dim <= 1 or not 0 <= args.yellow_boost <= 1:
         parser.error("cool-dim and yellow-boost must be between 0 and 1")
     if args.log_file is None and (args.log or sys.stderr is None):
