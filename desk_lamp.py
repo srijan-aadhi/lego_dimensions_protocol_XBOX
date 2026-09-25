@@ -91,9 +91,11 @@ STOP_FILE = STATE_DIR / "stop"            # created by lamp_off.py to ask the la
 PID_FILE = STATE_DIR / "desk_lamp.pid"    # exists while a lamp is running
 DEFAULT_LOG_FILE = STATE_DIR / "desk_lamp.log"
 
-# Reconnect back-off when the pad is missing: start quick, settle at a slow poll.
+# Reconnect back-off when the pad is missing: 2 s doubling to 5 s. Checking for
+# the pad is cheap and repeated failures are not logged, so a slow poll buys
+# nothing; the old 30 s ceiling made a replug take up to 30 s to notice.
 RETRY_MIN_SECONDS = 2
-RETRY_MAX_SECONDS = 30
+RETRY_MAX_SECONDS = 5
 
 # Errors that mean "no usable pad right now" rather than a bug in the script.
 PAD_ERRORS = (ValueError, RuntimeError, usb.core.USBError)
