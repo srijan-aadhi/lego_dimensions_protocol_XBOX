@@ -327,17 +327,22 @@ def run_rainbow(lamp, cycle_seconds):
         time.sleep(1 / UPDATES_PER_SECOND)
 
 
-def connect(verbose, stop):
+def connect(verbose, stop, reset=False):
     """
     Open the pad, retrying until it is plugged in and answering.
     Logs the first failure (and any new kind of failure) rather than every attempt.
+
+    reset: ask the gateway to reset the pad's endpoints before initialising.
+    It is also switched on automatically once an attempt finds the pad but
+    times out talking to it, which is how the pad looks after the PC wakes
+    from sleep: Windows still lists it, but it stops accepting writes.
     """
     delay = RETRY_MIN_SECONDS
     last_error = None
     began = time.monotonic()
     while True:
         try:
-            gateway = Gateway(verbose=verbose)
+            gateway = Gateway(verbose=verbose, reset=reset)
         except usb.core.NoBackendError:
             raise  # libusb itself is missing; retrying won't help
         except PAD_ERRORS as error:
@@ -345,6 +350,10 @@ def connect(verbose, stop):
             if message != last_error:
                 log.warning("Toy pad not available (%s). Retrying until it appears.", message)
                 last_error = message
+            if isinstance(error, usb.core.USBTimeoutError) and not reset:
+                log.info("The pad is present but not answering; will reset it on the next attempt")
+                reset = True
+                last_error = None  # log the outcome of the first attempt after the reset too
             pause(delay, stop)
             delay = min(delay * 2, RETRY_MAX_SECONDS)
             continue
@@ -462,7 +471,11 @@ def run(args):
                 log.warning("Lost contact with the toy pad (%s). Waiting for it to return.", error)
                 gateway.close()
                 gateway = None
-                gateway = connect(args.verbose, stop)
+                # A timeout mid-run means the pad is still there but stopped
+                # listening (sleep/wake); reset it straight away. Any other
+                # error is an unplug, and a replug needs no reset.
+                gateway = connect(args.verbose, stop,
+                                  reset=isinstance(error, usb.core.USBTimeoutError))
                 lamp.reconnected(gateway)
                 log.info("Lamp back on")
     except KeyboardInterrupt:

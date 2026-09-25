@@ -57,13 +57,18 @@ class Gateway:
     Works with the PS3/PS4/Wii U portal and the Xbox One portal.
     """
 
-    def __init__(self, verbose=True):
+    def __init__(self, verbose=True, reset=False):
+        """
+        reset: clear the portal's endpoint state before initialising it. Used
+        when a previous open found the portal but its transfers timed out,
+        which is what happens after the PC wakes from sleep.
+        """
         self.verbose = verbose
         self.reattach = False
         self.is_xbox_one = False
         self._gip_sequence = 0
         # Initialise USB connection to the device
-        self.dev = self._init_usb()
+        self.dev = self._init_usb(reset)
         # Reset the state of the device to all pads off
         self.blank_pads()
 
@@ -73,7 +78,7 @@ class Gateway:
         if self.verbose:
             log.info(text)
 
-    def _init_usb(self):
+    def _init_usb(self, reset=False):
         """
         Connect to and initialise the portal
         """
@@ -103,6 +108,18 @@ class Gateway:
         # configuration will be the active one
         dev.set_configuration()
         self.dev = dev
+
+        if reset:
+            # After a sleep/wake Windows still lists the portal as fine, but
+            # bulk writes time out. WinUSB cannot cycle the port, and pyusb's
+            # dev.reset() releases the interface before libusb's WinUSB reset
+            # runs, so it would touch nothing. Clear the halt on each endpoint
+            # instead: CLEAR_FEATURE(ENDPOINT_HALT) on the pad plus a data-toggle
+            # reset on both sides, which is the useful part of a WinUSB reset.
+            usb.util.claim_interface(dev, 0)
+            log.info("Resetting portal endpoints (clear halt)")
+            dev.clear_halt(EP_OUT)
+            dev.clear_halt(EP_IN)
 
         # Initialise portal
         self._log("Initialising portal")
